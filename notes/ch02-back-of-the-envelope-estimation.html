@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ch 2 — Back-of-the-Envelope Estimation</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    mermaid.initialize({ startOnLoad: true, theme: dark ? "dark" : "default" });
+  </script>
+</head>
+<body>
+<div class="layout">
+<nav class="toc">
+  <a class="home" href="../index.html">&larr; All chapters</a>
+  <ul>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#performance">Performance rules of thumb</a></li>
+    <li><a href="#twitter">Example: Twitter QPS and storage</a></li>
+    <li><a href="#tips">Tips</a></li>
+    <li><a href="#common">Commonly asked estimations</a></li>
+  </ul>
+</nav>
+
+<main>
+<h1>Ch 2 — Back-of-the-Envelope Estimation</h1>
+<p class="subtitle"><em>System Design Interview</em> by Alex Xu. Summary notes.</p>
+
+<!-- ============================================================ -->
+<h2 id="overview">Overview</h2>
+<div class="callout">Back-of-the-envelope estimation means quick, rough calculations (QPS, storage, and so on) that show whether a design can handle the load. The goal is the right order of magnitude, not an exact number.</div>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+    A["Write down<br>assumptions"] --> B["Calculate with<br>rounded numbers"]
+    B --> C["Label every<br>unit"]
+    C --> D["Estimate:<br>QPS, peak QPS,<br>storage, cache, servers"]
+</pre>
+<figcaption>How to approach any estimation</figcaption>
+</figure>
+
+<!-- ============================================================ -->
+<h2 id="performance">Performance rules of thumb</h2>
+<table>
+  <thead><tr><th>Fact</th><th>What to do</th></tr></thead>
+  <tbody>
+    <tr><td>Memory is <strong>fast</strong>, disk is <strong>slow</strong></td><td>Keep hot data in memory (cache)</td></tr>
+    <tr><td>Disk seeks are slow</td><td>Avoid disk seeks when possible</td></tr>
+    <tr><td>Simple compression algorithms are fast</td><td>Compressing is cheap, so it's usually worth it</td></tr>
+    <tr><td>Sending data over the internet takes time</td><td>Compress data before sending it</td></tr>
+    <tr><td>Data centers are usually in different regions</td><td>Sending data between DCs is slow, so keep cross-region calls to a minimum</td></tr>
+  </tbody>
+</table>
+
+<div class="compare">
+<figure class="diagram">
+<figcaption class="title">Fast path</figcaption>
+<pre class="mermaid">
+flowchart LR
+    App["App"] -->|"read"| Mem[("Memory")]
+    style Mem stroke:#1a7f37,stroke-width:2px
+</pre>
+</figure>
+<figure class="diagram">
+<figcaption class="title">Slow path</figcaption>
+<pre class="mermaid">
+flowchart LR
+    App["App"] -->|"disk seek"| Disk[("Disk")]
+    App -->|"cross-region"| DC2["Other DC"]
+    style Disk stroke:#cf222e,stroke-width:2px
+    style DC2 stroke:#cf222e,stroke-width:2px
+</pre>
+</figure>
+</div>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TB
+    A["Data"] -->|"compress (fast)"| B["Smaller data"]
+    B -->|"send over the network:<br>less to transfer"| C["Receiver"]
+    C -->|"decompress (fast)"| D["Data"]
+</pre>
+<figcaption>Compressing costs a little CPU time and saves a lot of network time</figcaption>
+</figure>
+
+<!-- ============================================================ -->
+<h2 id="twitter">Example: estimate Twitter QPS and storage</h2>
+<div class="callout">These numbers are for the exercise only. They are not real Twitter numbers.</div>
+
+<h3>Assumptions</h3>
+<table>
+  <thead><tr><th>Assumption</th><th>Value</th></tr></thead>
+  <tbody>
+    <tr><td>Monthly active users (MAU)</td><td>300 million</td></tr>
+    <tr><td>Share of users active daily</td><td>50%</td></tr>
+    <tr><td>Tweets per user per day</td><td>2</td></tr>
+    <tr><td>Tweets that contain media</td><td>10%</td></tr>
+    <tr><td>Data retention</td><td>5 years</td></tr>
+  </tbody>
+</table>
+
+<h3>QPS estimate</h3>
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TB
+    MAU["MAU<br>300 million"] -->|"x 50%"| DAU["DAU<br>150 million"]
+    DAU -->|"x 2 tweets"| TPD["300 million<br>tweets / day"]
+    TPD -->|"/ 24 h / 3600 s"| QPS["QPS<br>~3,500"]
+    QPS -->|"x 2"| PEAK["Peak QPS<br>~7,000"]
+    style PEAK stroke-width:3px
+</pre>
+</figure>
+
+<table>
+  <thead><tr><th>Metric</th><th>Formula</th><th>Result</th></tr></thead>
+  <tbody>
+    <tr><td>Daily active users (DAU)</td><td>300 million &times; 50%</td><td><strong>150 million</strong></td></tr>
+    <tr><td>Tweets QPS</td><td>150 million &times; 2 tweets / 24 h / 3600 s</td><td><strong>~3,500</strong></td></tr>
+    <tr><td>Peak QPS</td><td>2 &times; QPS</td><td><strong>~7,000</strong></td></tr>
+  </tbody>
+</table>
+
+<h3>Storage estimate (media only)</h3>
+<table>
+  <thead><tr><th>Field</th><th>Average size</th></tr></thead>
+  <tbody>
+    <tr><td><code>tweet_id</code></td><td>64 bytes</td></tr>
+    <tr><td>text</td><td>140 bytes</td></tr>
+    <tr><td>media</td><td>1 MB</td></tr>
+  </tbody>
+</table>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TB
+    DAU["DAU<br>150 million"] -->|"x 2 tweets"| T["300 million<br>tweets / day"]
+    T -->|"x 10% with media"| M["30 million<br>media tweets / day"]
+    M -->|"x 1 MB"| D["30 TB / day"]
+    D -->|"x 365 x 5 years"| Y["~55 PB"]
+    style Y stroke-width:3px
+</pre>
+<figcaption>Media is so much bigger than the text that it dominates storage</figcaption>
+</figure>
+
+<table>
+  <thead><tr><th>Metric</th><th>Formula</th><th>Result</th></tr></thead>
+  <tbody>
+    <tr><td>Media storage per day</td><td>150 million &times; 2 &times; 10% &times; 1 MB</td><td><strong>30 TB / day</strong></td></tr>
+    <tr><td>Media storage for 5 years</td><td>30 TB &times; 365 &times; 5</td><td><strong>~55 PB</strong></td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="tips">Tips</h2>
+<table>
+  <thead><tr><th>Tip</th><th>Why</th><th>Example</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Round and approximate</strong></td><td>An approximate answer is enough; precision wastes interview time</td><td>150M &times; 2 / 86,400 &asymp; <strong>~3,500</strong>, not 3,472.2</td></tr>
+    <tr><td><strong>Write down your assumptions</strong></td><td>You can refer back to them later</td><td>"300M MAU, 50% daily, 2 tweets/day"</td></tr>
+    <tr><td><strong>Label your units</strong></td><td>Avoids ambiguity, such as whether "5" means 5 KB or 5 MB</td><td>30 <strong>TB/day</strong>, 55 <strong>PB</strong></td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="common">Commonly asked estimations</h2>
+<div class="cards">
+  <div class="card"><h3>QPS</h3>Queries per second on average.</div>
+  <div class="card"><h3>Peak QPS</h3>The busiest-time load that capacity has to handle.</div>
+  <div class="card"><h3>Storage</h3>How much data builds up over the retention period.</div>
+  <div class="card"><h3>Cache</h3>How much memory is needed to hold hot data.</div>
+  <div class="card"><h3>Number of servers</h3>How many machines are needed to serve the load.</div>
+</div>
+
+</main>
+</div>
+</body>
+</html>

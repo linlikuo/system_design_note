@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ch 1 — Scale From Zero to Millions of Users</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    mermaid.initialize({ startOnLoad: true, theme: dark ? "dark" : "default" });
+  </script>
+</head>
+<body>
+<div class="layout">
+<nav class="toc">
+  <a class="home" href="../index.html">&larr; All chapters</a>
+  <ul>
+    <li><a href="#big-picture">Big picture</a></li>
+    <li><a href="#evolution">How the system evolves</a></li>
+    <li><a href="#terms">Key terms</a></li>
+    <li><a href="#single-server">Single server and DNS</a></li>
+    <li><a href="#scaling">Vertical vs horizontal</a></li>
+    <li><a href="#load-balancer">Load balancer</a></li>
+    <li><a href="#databases">Databases</a></li>
+    <li><a href="#replication">Replication</a></li>
+    <li><a href="#sharding">Sharding</a></li>
+    <li><a href="#cache">Cache</a></li>
+    <li><a href="#cdn">CDN</a></li>
+    <li><a href="#stateless">Stateless web tier</a></li>
+    <li><a href="#data-centers">Data centers</a></li>
+    <li><a href="#message-queue">Message queue</a></li>
+    <li><a href="#ops">Logging, metrics, automation</a></li>
+    <li><a href="#takeaways">Takeaways</a></li>
+  </ul>
+</nav>
+
+<main>
+<h1>Ch 1 — Scale From Zero to Millions of Users</h1>
+<p class="subtitle"><em>System Design Interview</em> by Alex Xu. Summary notes.</p>
+
+<!-- ============================================================ -->
+<h2 id="big-picture">The big picture</h2>
+<p>This is where the chapter ends up. Every section below adds one piece of this diagram.</p>
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TB
+    User(["User: web / mobile"]) -->|"1. resolve domain"| DNS["GeoDNS"]
+    User -->|"static files"| CDN[("CDN")]
+    User -->|"2. HTTP request"| LB["Load balancer"]
+    LB --> W1["Web server 1"]
+    LB --> W2["Web server 2"]
+    LB --> W3["Web server N"]
+    W1 --> Cache[("Cache tier")]
+    W2 --> Cache
+    W3 --> Cache
+    W1 --> Session[("Shared session store<br>NoSQL")]
+    W2 --> Session
+    W3 --> Session
+    W1 --> Master[("DB master<br>writes")]
+    W2 --> Slaves[("DB slaves<br>reads")]
+    W3 --> Slaves
+    Master -. replicate .-> Slaves
+    W1 -->|"async jobs"| MQ[["Message queue"]]
+    MQ --> Workers["Workers"]
+    CDN -. "on miss" .-> Origin["Origin / storage"]
+</pre>
+<figcaption>Final architecture after all the scaling steps</figcaption>
+</figure>
+
+<!-- ============================================================ -->
+<h2 id="evolution">How the system evolves</h2>
+<div class="steps">
+  <span class="step"><b>1</b>Single server</span> <span class="arrow">&rarr;</span>
+  <span class="step"><b>2</b>Separate web and DB</span> <span class="arrow">&rarr;</span>
+  <span class="step"><b>3</b>Load balancer + many web servers</span> <span class="arrow">&rarr;</span>
+  <span class="step"><b>4</b>DB replication</span> <span class="arrow">&rarr;</span>
+  <span class="step"><b>5</b>Cache</span> <span class="arrow">&rarr;</span>
+  <span class="step"><b>6</b>CDN</span> <span class="arrow">&rarr;</span>
+  <span class="step"><b>7</b>Stateless web tier</span> <span class="arrow">&rarr;</span>
+  <span class="step"><b>8</b>Multiple data centers</span> <span class="arrow">&rarr;</span>
+  <span class="step"><b>9</b>Message queue</span> <span class="arrow">&rarr;</span>
+  <span class="step"><b>10</b>Logging, metrics, automation</span> <span class="arrow">&rarr;</span>
+  <span class="step"><b>11</b>DB sharding</span>
+</div>
+<p class="subtitle">Each step fixes the bottleneck the previous one left behind.</p>
+
+<table>
+  <thead><tr><th>Step</th><th>Problem it solves</th></tr></thead>
+  <tbody>
+    <tr><td>Separate web and DB</td><td>Web traffic and DB load can scale independently</td></tr>
+    <tr><td>Load balancer</td><td>One web server is a SPOF and has limited capacity</td></tr>
+    <tr><td>DB replication</td><td>The DB is a SPOF and becomes a read bottleneck</td></tr>
+    <tr><td>Cache</td><td>Repeated DB reads are slow</td></tr>
+    <tr><td>CDN</td><td>Static files are slow for users far from the servers</td></tr>
+    <tr><td>Stateless web tier</td><td>Sessions tie users to one server, which blocks autoscaling</td></tr>
+    <tr><td>Multiple data centers</td><td>A regional outage, and high latency for users far away</td></tr>
+    <tr><td>Message queue</td><td>Components are tightly coupled, and slow work blocks requests</td></tr>
+    <tr><td>Logging, metrics, automation</td><td>A large system can't be run by hand</td></tr>
+    <tr><td>Sharding</td><td>The data grows beyond what one DB server can hold</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="terms">Key terms</h2>
+<table>
+  <thead><tr><th>Term</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><strong>DNS</strong> (Domain Name System)</td><td>Turns a domain name (<code>api.example.com</code>) into an IP address.</td></tr>
+    <tr><td><strong>GeoDNS</strong></td><td>DNS that returns a different IP depending on where the user is, which sends them to the nearest data center.</td></tr>
+    <tr><td><strong>Load balancer</strong></td><td>Spreads incoming traffic across a pool of web servers.</td></tr>
+    <tr><td><strong>SPOF</strong> (single point of failure)</td><td>A component that brings the whole system down when it fails.</td></tr>
+    <tr><td><strong>Replication</strong></td><td>Keeping copies of the same data on several DB servers.</td></tr>
+    <tr><td><strong>Sharding</strong></td><td>Splitting one large DB into smaller parts (shards) on different servers.</td></tr>
+    <tr><td><strong>TTL</strong> (time to live)</td><td>How long a cached item stays valid before it expires.</td></tr>
+    <tr><td><strong>Stateless</strong></td><td>A server that keeps no user data between requests.</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="single-server">Single server and DNS</h2>
+<figure class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant D as DNS
+    participant S as Web server
+    U->>D: api.mysite.com?
+    D-->>U: IP 15.125.23.214
+    U->>S: HTTP request to that IP
+    S-->>U: HTML page or JSON response
+</pre>
+<figcaption>How a request reaches the server</figcaption>
+</figure>
+
+<!-- ============================================================ -->
+<h2 id="scaling">Scaling: vertical vs horizontal</h2>
+<div class="compare">
+<figure class="diagram">
+<figcaption class="title">Vertical: scale up</figcaption>
+<pre class="mermaid">
+flowchart TB
+    S1["Small server"] -->|"+CPU +RAM +disk"| S2["BIG server"]
+</pre>
+</figure>
+<figure class="diagram">
+<figcaption class="title">Horizontal: scale out</figcaption>
+<pre class="mermaid">
+flowchart TB
+    P["Server pool"] --> A["Server"]
+    P --> B["Server"]
+    P --> C["Server"]
+    P --> D["+ more"]
+</pre>
+</figure>
+</div>
+
+<table>
+  <thead><tr><th></th><th>Vertical (scale up)</th><th>Horizontal (scale out)</th></tr></thead>
+  <tbody>
+    <tr><td>How</td><td>A bigger machine</td><td>More machines</td></tr>
+    <tr><td>Pros</td><td class="good">Simple</td><td class="good">Can keep growing, has redundancy</td></tr>
+    <tr><td>Cons</td><td class="bad">Hardware limit, no failover (SPOF)</td><td class="bad">More complex; needs a LB and a stateless design</td></tr>
+    <tr><td>Fits</td><td>Low traffic</td><td>Large-scale apps</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="load-balancer">Load balancer</h2>
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+    U["Users"] -->|"public IP"| LB["Load balancer"]
+    LB -->|"private IP"| S1["Server 1"]
+    LB -->|"private IP"| S2["Server 2 (down)"]
+    LB -->|"private IP"| S3["Server 3 (new)"]
+    style S2 stroke-dasharray: 5 5
+</pre>
+<figcaption>Users see only the LB's public IP. The servers are reached over private IPs.</figcaption>
+</figure>
+
+<table>
+  <thead><tr><th>Situation</th><th>What the LB does</th></tr></thead>
+  <tbody>
+    <tr><td>A server goes offline</td><td>Sends all traffic to the healthy servers</td></tr>
+    <tr><td>Traffic grows</td><td>Adding servers to the pool is enough; the LB starts using them</td></tr>
+    <tr><td>Security</td><td>Web servers aren't reachable from the internet directly</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="databases">Databases: relational vs NoSQL</h2>
+<table>
+  <thead><tr><th></th><th>Relational (SQL)</th><th>Non-relational (NoSQL)</th></tr></thead>
+  <tbody>
+    <tr><td>Data model</td><td>Tables and rows</td><td>Key-value, graph, column, or document stores</td></tr>
+    <tr><td>Joins</td><td class="good">Supported</td><td class="bad">Generally not supported</td></tr>
+    <tr><td>Examples</td><td>MySQL, PostgreSQL, Oracle</td><td>CouchDB, Neo4j, Cassandra, HBase, DynamoDB</td></tr>
+    <tr><td>Pick when</td><td>The default choice, when data has relationships</td><td>See the decision chart below</td></tr>
+  </tbody>
+</table>
+
+<table>
+  <thead><tr><th>NoSQL category</th><th>Shape of the data</th><th>Example</th></tr></thead>
+  <tbody>
+    <tr><td>Key-value</td><td><code>key &rarr; value</code></td><td>DynamoDB, Redis</td></tr>
+    <tr><td>Document</td><td>JSON-like documents</td><td>CouchDB, MongoDB</td></tr>
+    <tr><td>Column</td><td>Wide rows grouped into column families</td><td>Cassandra, HBase</td></tr>
+    <tr><td>Graph</td><td>Nodes and edges</td><td>Neo4j</td></tr>
+  </tbody>
+</table>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+    A{"Very low latency<br>needed?"}
+    A -->|yes| N["NoSQL"]
+    A -->|no| B{"Unstructured data or<br>no relationships?"}
+    B -->|yes| N
+    B -->|no| C{"Only save and load data<br>as-is: JSON, XML, YAML?"}
+    C -->|yes| N
+    C -->|no| D{"Huge amount of data?"}
+    D -->|yes| N
+    D -->|no| R["Relational DB"]
+</pre>
+<figcaption>When to pick NoSQL</figcaption>
+</figure>
+
+<!-- ============================================================ -->
+<h2 id="replication">Database replication (master / slave)</h2>
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+    App["App"] -->|"writes: insert, update, delete"| M[("Master")]
+    M -. copy .-> S1[("Slave 1")]
+    M -. copy .-> S2[("Slave 2")]
+    M -. copy .-> S3[("Slave 3")]
+    App -->|reads| S1
+    App -->|reads| S2
+    App -->|reads| S3
+</pre>
+<figcaption>Apps read far more than they write, so there are usually more slaves than masters</figcaption>
+</figure>
+
+<table>
+  <thead><tr><th>Role</th><th>Handles</th><th>How many</th></tr></thead>
+  <tbody>
+    <tr><td>Master</td><td>Writes only</td><td>Usually 1</td></tr>
+    <tr><td>Slave</td><td>Reads only (a copy of the master's data)</td><td>Many</td></tr>
+  </tbody>
+</table>
+
+<table>
+  <thead><tr><th>Benefit</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>Performance</td><td>Reads run in parallel across the slaves</td></tr>
+    <tr><td>Reliability</td><td>The data lives in several places, so losing one server (fire, earthquake) loses no data</td></tr>
+    <tr><td>High availability</td><td>If one DB goes offline, another one serves the traffic</td></tr>
+  </tbody>
+</table>
+
+<table>
+  <thead><tr><th>Failure</th><th>What happens</th></tr></thead>
+  <tbody>
+    <tr><td>A slave goes down (and it was the only one)</td><td>Reads go to the master until a new slave replaces it</td></tr>
+    <tr><td>A slave goes down (others remain)</td><td>Reads move to the healthy slaves, and a new slave replaces the dead one</td></tr>
+    <tr><td>The master goes down</td><td>A slave is <strong>promoted</strong> to master and a new slave is added. The promoted slave's data may be behind, so missing data must be recovered.</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="sharding">Database scaling: sharding</h2>
+<table>
+  <thead><tr><th></th><th>Vertical DB scaling</th><th>Horizontal DB scaling (sharding)</th></tr></thead>
+  <tbody>
+    <tr><td>How</td><td>A bigger DB machine (more CPU, RAM, disk)</td><td>Split the rows across several DB servers by a <strong>shard key</strong></td></tr>
+    <tr><td>Limit</td><td class="bad">Hardware limit, SPOF, expensive</td><td class="good">Add more shards as the data grows</td></tr>
+  </tbody>
+</table>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TB
+    Q["Query for user_id = 6"] --> F{"shard = user_id % 4"}
+    F -->|0| D0[("Shard 0")]
+    F -->|1| D1[("Shard 1")]
+    F -->|"2  (6 % 4 = 2)"| D2[("Shard 2")]
+    F -->|3| D3[("Shard 3")]
+    style D2 stroke-width:3px
+</pre>
+<figcaption>A hash of the shard key picks the server. The same key always goes to the same shard.</figcaption>
+</figure>
+
+<table>
+  <thead><tr><th>Problem</th><th>What happens</th><th>Fix</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Resharding</strong></td><td>(1) A shard is full because of fast growth. (2) The data is spread unevenly, so some shards fill up first (<em>shard exhaustion</em>).</td><td>Change the sharding function and move data. Use <strong>consistent hashing</strong>.</td></tr>
+    <tr><td><strong>Celebrity / hotspot key</strong></td><td>Heavy traffic to one key overloads its shard</td><td>Give hot keys their own shard, or split them further</td></tr>
+    <tr><td><strong>Joins</strong></td><td>Joins across shards are hard</td><td><strong>De-normalize</strong> so a query can be answered from one table</td></tr>
+  </tbody>
+</table>
+
+<div class="compare">
+<figure class="diagram">
+<figcaption class="title">Normalized: needs a join</figcaption>
+<pre class="mermaid">
+flowchart LR
+    O1["orders<br>id, user_id"] -->|"join on user_id"| U1["users<br>id, name"]
+</pre>
+</figure>
+<figure class="diagram">
+<figcaption class="title">De-normalized: no join</figcaption>
+<pre class="mermaid">
+flowchart LR
+    O2["orders<br>id, user_id,<br>user_name (copied)"]
+</pre>
+</figure>
+</div>
+<p class="subtitle">De-normalization copies data so a query never has to cross shards.</p>
+
+<!-- ============================================================ -->
+<h2 id="cache">Cache</h2>
+<div class="callout">A <strong>cache tier</strong> is a fast, temporary data layer in front of the DB. It improves performance, lowers DB load, and scales on its own.</div>
+
+<figure class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+    participant W as Web server
+    participant C as Cache
+    participant DB as Database
+    W->>C: get(key)
+    alt cache hit
+        C-->>W: data
+    else cache miss
+        W->>DB: query
+        DB-->>W: data
+        W->>C: set(key, data, TTL)
+    end
+</pre>
+<figcaption>Read-through cache</figcaption>
+</figure>
+
+<table>
+  <thead><tr><th>Consideration</th><th>Rule of thumb</th></tr></thead>
+  <tbody>
+    <tr><td>When to use</td><td>Data that is read often and changed rarely</td></tr>
+    <tr><td>Expiration</td><td>Set a TTL. Too short means frequent DB reloads; too long means stale data.</td></tr>
+    <tr><td>Consistency</td><td>Keeping the cache and DB in sync is hard, especially across regions</td></tr>
+    <tr><td>Failures</td><td>A single cache server is a SPOF. Use several cache servers across data centers and <strong>overprovision memory</strong> as a buffer.</td></tr>
+    <tr><td>Eviction</td><td>What to remove when the cache is full (see the next table)</td></tr>
+  </tbody>
+</table>
+
+<table>
+  <thead><tr><th>Eviction policy</th><th>Removes</th><th>Usage</th></tr></thead>
+  <tbody>
+    <tr><td><strong>LRU</strong> (least recently used)</td><td>The item that hasn't been used for the longest time</td><td>Most popular</td></tr>
+    <tr><td><strong>LFU</strong> (least frequently used)</td><td>The item used the fewest times</td><td>When how often an item is used matters more than when</td></tr>
+    <tr><td><strong>FIFO</strong> (first in, first out)</td><td>The oldest item</td><td>Simple cases</td></tr>
+  </tbody>
+</table>
+
+<div class="compare">
+<figure class="diagram">
+<figcaption class="title">SPOF: one cache server</figcaption>
+<pre class="mermaid">
+flowchart TB
+    W1["Web"] --> C1[("One cache")]
+    style C1 stroke:#cf222e,stroke-width:2px
+</pre>
+</figure>
+<figure class="diagram">
+<figcaption class="title">Fixed: caches in several DCs</figcaption>
+<pre class="mermaid">
+flowchart TB
+    W2["Web"] --> C2[("Cache DC1")]
+    W2 --> C3[("Cache DC2")]
+</pre>
+</figure>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="cdn">CDN (Content Delivery Network)</h2>
+<div class="callout">A CDN is a set of servers around the world that cache <strong>static</strong> content (images, video, CSS, JS) close to users.</div>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+    UA["User in Asia"] --> CA["CDN Asia"]
+    UE["User in Europe"] --> CE["CDN Europe"]
+    UU["User in US"] --> CU["CDN US"]
+    CA -. "on miss" .-> O["Origin server"]
+    CE -. "on miss" .-> O
+    CU -. "on miss" .-> O
+</pre>
+<figcaption>Each user is served by the nearest CDN server</figcaption>
+</figure>
+
+<figure class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant E as CDN edge (nearby)
+    participant O as Origin server
+    U->>E: GET image.png
+    alt cached
+        E-->>U: image.png
+    else not cached
+        E->>O: fetch image.png
+        O-->>E: image.png + TTL
+        E-->>U: image.png (now cached until TTL)
+    end
+</pre>
+</figure>
+
+<table>
+  <thead><tr><th>Consideration</th><th>Rule of thumb</th></tr></thead>
+  <tbody>
+    <tr><td>Cost</td><td>You pay for data in and out, so don't put rarely used files on the CDN</td></tr>
+    <tr><td>Cache expiry</td><td>Time-sensitive content needs a TTL that is neither too long (stale) nor too short (constant origin reloads)</td></tr>
+    <tr><td>Fallback</td><td>If the CDN is down, clients fetch from the origin</td></tr>
+    <tr><td>Invalidation</td><td>Use the vendor's API, or <strong>object versioning</strong>: <code>image.png?v=2</code></td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="stateless">Stateless web tier</h2>
+<div class="callout">To scale web servers horizontally, move <strong>state</strong> (such as user sessions) out of them into a shared store: Redis/Memcached, a relational DB, or NoSQL. The book picks NoSQL because it scales easily.</div>
+
+<div class="compare">
+<figure class="diagram">
+<figcaption class="title">Stateful: the problem</figcaption>
+<pre class="mermaid">
+flowchart TB
+    A1["User A"] --> SV1["Server 1<br>(A's session)"]
+    B1["User B"] --> SV2["Server 2<br>(B's session)"]
+</pre>
+</figure>
+<figure class="diagram">
+<figcaption class="title">Stateless: the fix</figcaption>
+<pre class="mermaid">
+flowchart TB
+    A2["User A"] --> LB["Load balancer"]
+    B2["User B"] --> LB
+    LB --> X1["Server 1"]
+    LB --> X2["Server 2"]
+    LB --> X3["Server 3"]
+    X1 --> Store[("Shared session store")]
+    X2 --> Store
+    X3 --> Store
+</pre>
+</figure>
+</div>
+
+<table>
+  <thead><tr><th></th><th>Stateful</th><th>Stateless</th></tr></thead>
+  <tbody>
+    <tr><td>Routing</td><td class="bad">A client must stick to one server (sticky sessions, which add overhead)</td><td class="good">Any request can go to any server</td></tr>
+    <tr><td>Adding or removing servers</td><td class="bad">Hard</td><td class="good">Easy, which makes <strong>autoscaling</strong> possible</td></tr>
+    <tr><td>Server failure</td><td class="bad">The user's session is lost</td><td class="good">No impact</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="data-centers">Multiple data centers</h2>
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+    US["US user"] -->|geoDNS| DC1["DC US-East"]
+    EU["EU user"] -->|geoDNS| DC2["DC EU-West"]
+    DC1 <-. "replicate data" .-> DC2
+    US -. "US-East outage: failover" .-> DC2
+</pre>
+<figcaption>Normally each user goes to the closest DC. During a major outage, all traffic goes to a healthy DC.</figcaption>
+</figure>
+
+<table>
+  <thead><tr><th>Challenge</th><th>Solution</th></tr></thead>
+  <tbody>
+    <tr><td>Traffic redirection</td><td>GeoDNS sends users to the right DC and handles failover</td></tr>
+    <tr><td>Data sync</td><td>Replicate data across DCs so a failover still finds the user's data</td></tr>
+    <tr><td>Test and deployment</td><td>Automated deploy tools keep every DC consistent</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="message-queue">Message queue</h2>
+<div class="callout">A durable buffer for <strong>asynchronous</strong> work. Producers publish messages, and consumers pick them up and do the work each message describes.</div>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+    P1["Producer"] -->|publish| Q[["Queue: msg, msg, msg"]]
+    P2["Producer"] -->|publish| Q
+    Q -->|consume| C1["Consumer"]
+    Q -->|consume| C2["Consumer"]
+</pre>
+</figure>
+
+<figure class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+    participant P as Producer
+    participant Q as Queue
+    participant C as Consumer
+    Note over C: consumer is down
+    P->>Q: publish job 1
+    P->>Q: publish job 2
+    Note over Q: messages wait safely
+    Note over C: consumer comes back
+    C->>Q: pull job 1
+    C->>Q: pull job 2
+</pre>
+<figcaption>Decoupling: either side can be down without losing work</figcaption>
+</figure>
+
+<table>
+  <thead><tr><th>Benefit</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td>Decoupling</td><td>A producer can post while the consumer is down, and a consumer can read while the producer is down</td></tr>
+    <tr><td>Independent scaling</td><td>Add more consumers when the queue grows, or remove them when it's short</td></tr>
+    <tr><td>Reliability</td><td>The queue holds messages until they are processed</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="ops">Logging, metrics, automation</h2>
+<table>
+  <thead><tr><th>Area</th><th>Level</th><th>What to watch or do</th></tr></thead>
+  <tbody>
+    <tr><td>Logging</td><td>Per server, or central</td><td>Watch error logs, ideally in a central service that is easy to search</td></tr>
+    <tr><td rowspan="3">Metrics</td><td>Host</td><td>CPU, memory, disk I/O</td></tr>
+    <tr><td>Aggregated</td><td>Performance of a whole tier (DB tier, cache tier)</td></tr>
+    <tr><td>Key business</td><td>Daily active users, retention, revenue</td></tr>
+    <tr><td>Automation</td><td>CI/CD</td><td>Automate build, test, and deploy to boost developer productivity</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="takeaways">Takeaways: how to scale to millions of users</h2>
+<div class="cards">
+  <div class="card"><h3>1. Stateless</h3>Keep the web tier stateless.</div>
+  <div class="card"><h3>2. Redundancy</h3>Build redundancy at every tier.</div>
+  <div class="card"><h3>3. Cache</h3>Cache as much data as you can.</div>
+  <div class="card"><h3>4. Multi-DC</h3>Support multiple data centers.</div>
+  <div class="card"><h3>5. CDN</h3>Host static assets on a CDN.</div>
+  <div class="card"><h3>6. Sharding</h3>Scale the data tier with sharding.</div>
+  <div class="card"><h3>7. Services</h3>Split tiers into individual services.</div>
+  <div class="card"><h3>8. Monitor</h3>Monitor the system and use automation tools.</div>
+</div>
+
+</main>
+</div>
+</body>
+</html>

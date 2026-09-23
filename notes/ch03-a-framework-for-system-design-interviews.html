@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ch 3 — A Framework for System Design Interviews</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    mermaid.initialize({ startOnLoad: true, theme: dark ? "dark" : "default" });
+  </script>
+</head>
+<body>
+<div class="layout">
+<nav class="toc">
+  <a class="home" href="../index.html">&larr; All chapters</a>
+  <ul>
+    <li><a href="#overview">The 4-step process</a></li>
+    <li><a href="#time">Time allocation</a></li>
+    <li><a href="#step1">Step 1: Understand the problem</a></li>
+    <li><a href="#step2">Step 2: High-level design</a></li>
+    <li><a href="#step3">Step 3: Deep dive</a></li>
+    <li><a href="#step4">Step 4: Wrap up</a></li>
+    <li><a href="#dos">Dos and don'ts</a></li>
+    <li><a href="../cheat-sheet.html">Interview cheat sheet &rarr;</a></li>
+  </ul>
+</nav>
+
+<main>
+<h1>Ch 3 — A Framework for System Design Interviews</h1>
+<p class="subtitle"><em>System Design Interview</em> by Alex Xu. Summary notes.</p>
+
+<!-- ============================================================ -->
+<h2 id="overview">The 4-step process</h2>
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+    S1["1. Understand the problem<br>and establish design scope"] --> S2["2. Propose high-level<br>design and get buy-in"]
+    S2 --> S3["3. Design<br>deep dive"]
+    S3 --> S4["4. Wrap up"]
+    S2 -. "feedback" .-> S1
+    S3 -. "feedback" .-> S2
+</pre>
+<figcaption>Talk with the interviewer at every step. It's a conversation, not a presentation.</figcaption>
+</figure>
+
+<table>
+  <thead><tr><th>Step</th><th>Goal</th><th>Output</th></tr></thead>
+  <tbody>
+    <tr><td>1. Understand the problem</td><td>Know exactly what to build</td><td>Agreed features, scale, and constraints</td></tr>
+    <tr><td>2. High-level design</td><td>Agree on a blueprint</td><td>A box diagram the interviewer has bought into</td></tr>
+    <tr><td>3. Deep dive</td><td>Go deep on the most important parts</td><td>Detailed design of the key components</td></tr>
+    <tr><td>4. Wrap up</td><td>Show critical thinking and end strong</td><td>Bottlenecks, improvements, and a recap</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="time">Time allocation (45-minute interview)</h2>
+<p class="subtitle">A rough guide only. The real split depends on the problem's scope and what the interviewer wants.</p>
+<table>
+  <thead><tr><th style="width:34%">Step</th><th style="width:14%">Minutes</th><th>0 to 25 min</th></tr></thead>
+  <tbody>
+    <tr><td>1. Understand the problem</td><td><strong>3–10</strong></td><td><div class="timebar"><span style="left:12%;width:28%"></span></div></td></tr>
+    <tr><td>2. High-level design</td><td><strong>10–15</strong></td><td><div class="timebar"><span style="left:40%;width:20%"></span></div></td></tr>
+    <tr><td>3. Deep dive</td><td><strong>10–25</strong></td><td><div class="timebar"><span style="left:40%;width:60%"></span></div></td></tr>
+    <tr><td>4. Wrap up</td><td><strong>3–5</strong></td><td><div class="timebar"><span style="left:12%;width:8%"></span></div></td></tr>
+    <tr><td></td><td></td><td><div class="scale"><span>0</span><span>5</span><span>10</span><span>15</span><span>20</span><span>25 min</span></div></td></tr>
+  </tbody>
+</table>
+<div class="callout">The questions are very broad and 45–60 minutes can't cover everything, so <strong>time management</strong> is essential. The deep dive gets the most time.</div>
+
+<!-- ============================================================ -->
+<h2 id="step1">Step 1 — Understand the problem and establish design scope</h2>
+<div class="callout">Don't jump into a solution. Ask questions, clarify the requirements, and <strong>write down your assumptions</strong>.</div>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+    Q["Ask clarifying<br>questions"] --> A["Get answers or<br>agree on assumptions"]
+    A --> W["Write them<br>down"]
+    W --> S["Agreed scope:<br>features, users, scale"]
+</pre>
+</figure>
+
+<h3>Questions to ask for any system</h3>
+<table>
+  <thead><tr><th>Area</th><th>Questions</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Features</strong></td><td>What specific features are we building? Which ones matter most?</td></tr>
+    <tr><td><strong>Users</strong></td><td>Who uses it? Mobile, web, or both? How many users (DAU)?</td></tr>
+    <tr><td><strong>Scale and growth</strong></td><td>How fast will it scale up? What scale is expected in 3 months, 6 months, a year?</td></tr>
+    <tr><td><strong>Tech stack</strong></td><td>What is the company's tech stack? Are there existing services we can reuse?</td></tr>
+    <tr><td><strong>Constraints</strong></td><td>Latency or availability targets? Consistency needs? Data retention?</td></tr>
+  </tbody>
+</table>
+
+<h3>Questions to ask for each system</h3>
+<p class="subtitle">These are starting points. The <a href="../cheat-sheet.html">cheat sheet</a> fills in each system as its chapter is read.</p>
+<table>
+  <thead><tr><th style="width:22%">System</th><th>Clarifying questions</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Rate limiter</strong></td><td>Client-side or server-side? Throttle by user ID, IP, or something else? How large is the system? Distributed? Should throttled users be told?</td></tr>
+    <tr><td><strong>Key-value store</strong></td><td>How big is each key-value pair? How much data in total? Is high availability or strong consistency more important? What read and write latency is acceptable?</td></tr>
+    <tr><td><strong>Unique ID generator</strong></td><td>What properties must the IDs have: unique, sortable by time, numeric only? How long (e.g. 64-bit)? How many IDs per second?</td></tr>
+    <tr><td><strong>URL shortener</strong></td><td>How many URLs per day? How short should the URL be? Which characters are allowed? Can URLs be deleted or updated? Are custom aliases needed?</td></tr>
+    <tr><td><strong>Web crawler</strong></td><td>What is it for: search indexing, data mining? How many pages per month? What content types: HTML only? How long to store pages? How are duplicate pages handled?</td></tr>
+    <tr><td><strong>Notification system</strong></td><td>What types: push, SMS, email? Real-time or can it be delayed? Which devices? What triggers notifications? Can users opt out? How many per day?</td></tr>
+    <tr><td><strong>News feed</strong></td><td>Mobile, web, or both? Key features: publish posts and see friends' posts? Feed order: chronological or ranked? How many friends per user? DAU? Images and videos?</td></tr>
+    <tr><td><strong>Chat system</strong></td><td>1-on-1, group, or both? What is the group size limit? Mobile or web? Online status? Attachments? Message size limit? End-to-end encryption? How long to keep chat history?</td></tr>
+    <tr><td><strong>Search autocomplete</strong></td><td>Match only the start of the query? How many suggestions? How are they ranked (popularity)? Spell check? Languages? DAU?</td></tr>
+    <tr><td><strong>Video platform (YouTube)</strong></td><td>Upload, watch, or both? Clients? DAU? Supported resolutions and formats? Max video size? Encryption? Can we use a cloud CDN?</td></tr>
+    <tr><td><strong>File storage (Google Drive)</strong></td><td>Upload, download, sync across devices, share? Supported file types? Max file size? Encryption? Storage quota per user? DAU?</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="step2">Step 2 — Propose high-level design and get buy-in</h2>
+<div class="callout">Build a <strong>first blueprint</strong> together with the interviewer and ask for feedback. Treat the interviewer as a <strong>teammate</strong>.</div>
+
+<table>
+  <thead><tr><th style="width:5%">#</th><th style="width:30%">Key point</th><th>What to do</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td><strong>Draw a box diagram</strong></td><td>Show the key components: clients (mobile/web), APIs, web servers, data stores, cache, CDN, message queue.</td></tr>
+    <tr><td>2</td><td><strong>Get buy-in</strong></td><td>Share the blueprint early and ask for feedback before going deeper.</td></tr>
+    <tr><td>3</td><td><strong>Check the numbers</strong></td><td>Do a back-of-the-envelope estimate (<a href="ch02-back-of-the-envelope-estimation.html">Ch 2</a>) to see whether the blueprint fits the scale. Think out loud, and ask first whether an estimate is needed.</td></tr>
+    <tr><td>4</td><td><strong>Walk through use cases</strong></td><td>Walk through a few concrete use cases to test the design and find edge cases.</td></tr>
+    <tr><td>5</td><td><strong>API and DB schema?</strong></td><td>It depends on the problem. For a huge problem ("design Google search") it's too low-level. For a small one (a multiplayer poker backend) it's fair game. Ask the interviewer.</td></tr>
+  </tbody>
+</table>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+    C["Clients<br>mobile / web"] --> API["API /<br>web servers"]
+    C --> CDN[("CDN")]
+    API --> Cache[("Cache")]
+    API --> DB[("Data store")]
+    API --> MQ[["Message queue"]]
+    MQ --> W["Workers"]
+</pre>
+<figcaption>A generic starting blueprint. Keep only the boxes the problem needs.</figcaption>
+</figure>
+
+<figure class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+    participant You
+    participant I as Interviewer
+    You->>I: Here is my high-level blueprint
+    I-->>You: Feedback, concerns
+    You->>You: Adjust the design
+    You->>I: Walk through use case A, then B
+    I-->>You: Agreed. Let's go deeper on X
+</pre>
+<figcaption>Getting buy-in is a loop, not a one-way presentation</figcaption>
+</figure>
+
+<!-- ============================================================ -->
+<h2 id="step3">Step 3 — Design deep dive</h2>
+<div class="callout">By now you've agreed on the goals and scope, drawn the blueprint, and have a sense of what to focus on. Next, work with the interviewer to <strong>pick and prioritize</strong> the components to go deep on.</div>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TB
+    A["Agreed blueprint from step 2"] --> B{"Which components<br>matter most?"}
+    B --> C["Ask the interviewer<br>what they want to focus on"]
+    B --> D["Pick the core or<br>hardest part yourself"]
+    C --> E["Deep dive the most<br>critical components first"]
+    D --> E
+    E --> F["Discuss trade-offs,<br>bottlenecks, estimates"]
+</pre>
+</figure>
+
+<table>
+  <thead><tr><th>Key point</th><th>What it means</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Prioritize</strong></td><td>Design the most critical components first</td></tr>
+    <tr><td><strong>Follow the interviewer</strong></td><td>Some interviewers want more high-level design. With senior candidates they often want performance, bottlenecks, and resource estimates.</td></tr>
+    <tr><td><strong>Go where the problem is hard</strong></td><td>URL shortener: the hash function. Chat system: low latency and online/offline status.</td></tr>
+    <tr><td><strong>Manage your time</strong></td><td>Skip details that don't matter. For example, explaining Facebook's EdgeRank feed-ranking algorithm in depth uses up time without showing design skill.</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="step4">Step 4 — Wrap up</h2>
+<div class="cards">
+  <div class="card"><h3>🔍 <mark>Bottlenecks</mark></h3>Name the bottlenecks and <mark>improvements</mark>. <strong>Never</strong> say the design is <mark>perfect</mark>.</div>
+  <div class="card"><h3>📝 <mark>Recap</mark></h3>Give a short recap of the design, especially if you suggested several solutions.</div>
+  <div class="card"><h3>💥 <mark>Error cases</mark></h3><mark>Server failure</mark>, <mark>network loss</mark>, and so on.</div>
+  <div class="card"><h3>⚙️ <mark>Operations</mark></h3><mark>Monitoring</mark> metrics and error logs. How to <mark>roll out</mark> the system.</div>
+  <div class="card"><h3>📈 <mark>Next scale curve</mark></h3>What changes to go from <mark>1M to 10M</mark> users?</div>
+  <div class="card"><h3>✨ <mark>Refinements</mark></h3>What would you <mark>improve with more time</mark>?</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="dos">Dos and don'ts</h2>
+<table>
+  <thead><tr><th style="width:50%">✅ Dos</th><th>❌ Don'ts</th></tr></thead>
+  <tbody>
+    <tr><td>
+      <ul class="do">
+        <li><strong>Always ask for clarification.</strong> Don't assume your assumption is correct.</li>
+        <li><strong>Understand the requirements.</strong> There is no right or best answer: a startup's design differs from one for a company with millions of users.</li>
+        <li><strong>Communicate.</strong> Let the interviewer know what you're thinking.</li>
+        <li><strong>Suggest multiple approaches</strong> if possible.</li>
+        <li><strong>Agree on the blueprint, then go into detail</strong>, starting with the most critical components.</li>
+        <li><strong>Bounce ideas off the interviewer.</strong> A good interviewer works with you like a teammate.</li>
+        <li><strong>Never give up.</strong></li>
+      </ul>
+    </td><td>
+      <ul class="dont">
+        <li>Don't be <strong>unprepared</strong> for typical questions.</li>
+        <li>Don't <strong>jump into a solution</strong> before clarifying requirements and assumptions.</li>
+        <li>Don't go <strong>too deep on one component</strong> early. High-level design first, then drill down.</li>
+        <li>Don't hesitate to <strong>ask for hints</strong> when stuck.</li>
+        <li>Don't <strong>think in silence</strong>.</li>
+        <li>Don't assume you're <strong>done</strong> after giving the design. You're done when the interviewer says so. <strong>Ask for feedback early and often.</strong></li>
+      </ul>
+    </td></tr>
+  </tbody>
+</table>
+
+</main>
+</div>
+</body>
+</html>

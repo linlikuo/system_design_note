@@ -83,3 +83,15 @@ pre.mermaid { margin: 0; background: transparent; }
 .step { border: 1px solid var(--border); background: var(--card); border-radius: 999px; padding: 6px 14px; font-size: 14px; }
 .step b { color: var(--accent); margin-right: 6px; }
 .arrow { color: var(--muted); }
+
+mark { background: #fff3a3; color: #1f2328; padding: 0 3px; border-radius: 3px; }
+@media (prefers-color-scheme: dark) { mark { background: #6e5a00; color: #fff8c5; } }
+
+.timebar { position: relative; height: 18px; background: var(--card); border: 1px solid var(--border); border-radius: 4px; min-width: 200px; }
+.timebar span { position: absolute; top: 0; bottom: 0; background: var(--accent); border-radius: 3px; opacity: 0.8; }
+.scale { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; }
+
+ul.do li::marker { content: "✅  "; }
+ul.dont li::marker { content: "❌  "; }
+ul.do, ul.dont { padding-left: 28px; margin: 0; }
+ul.do li, ul.dont li { margin: 6px 0; }

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Interview Cheat Sheet — System Design Interview Notes</title>
+  <link rel="stylesheet" href="assets/style.css">
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    mermaid.initialize({ startOnLoad: true, theme: dark ? "dark" : "default" });
+  </script>
+</head>
+<body>
+<div class="layout">
+<nav class="toc">
+  <a class="home" href="index.html">&larr; All chapters</a>
+  <ul>
+    <li><a href="#framework">Framework at a glance</a></li>
+    <li><a href="#how">How each system is laid out</a></li>
+    <li><a href="#systems">Systems</a></li>
+  </ul>
+</nav>
+
+<main>
+<h1>Interview Cheat Sheet</h1>
+<p class="subtitle">A one-page review of every system in the book. A system is added here when its chapter is read.</p>
+
+<!-- ============================================================ -->
+<h2 id="framework">Framework at a glance</h2>
+<p class="subtitle">From <a href="notes/ch03-a-framework-for-system-design-interviews.html">Ch 3</a>, for a 45-minute interview.</p>
+<table>
+  <thead><tr><th>Step</th><th>Time</th><th>Remember</th></tr></thead>
+  <tbody>
+    <tr><td><strong>1. Understand the problem</strong></td><td>3–10 min</td><td>Ask questions, don't assume, write down assumptions</td></tr>
+    <tr><td><strong>2. High-level design</strong></td><td>10–15 min</td><td>Box diagram, get buy-in, check the numbers, walk through use cases</td></tr>
+    <tr><td><strong>3. Deep dive</strong></td><td>10–25 min</td><td>Critical components first, follow the interviewer, manage time</td></tr>
+    <tr><td><strong>4. Wrap up</strong></td><td>3–5 min</td><td><mark>Bottlenecks</mark>, <mark>recap</mark>, <mark>error cases</mark>, <mark>operations</mark>, <mark>next scale curve</mark></td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="how">How each system is laid out</h2>
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+    S["System"] --> A["Step 1<br>Clarifying questions"]
+    S --> B["Step 2<br>Core components and API"]
+    S --> C["Step 3<br>Deep-dive topics"]
+    S --> D["Key trade-offs"]
+</pre>
+</figure>
+
+<table>
+  <thead><tr><th style="width:26%">Section</th><th>What goes in it</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Step 1: Clarifying questions</strong></td><td>What to ask before designing anything</td></tr>
+    <tr><td><strong>Step 2: Core components and API</strong></td><td>The boxes in the blueprint, the main APIs, and the data model</td></tr>
+    <tr><td><strong>Step 3: Deep-dive topics</strong></td><td>The hard parts the interviewer is likely to push on</td></tr>
+    <tr><td><strong>Key trade-offs</strong></td><td>Choices you should be able to defend</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="systems">Systems</h2>
+<div class="callout">No systems yet. Each one is added when its chapter is summarized.</div>
+
+</main>
+</div>
+</body>
+</html>

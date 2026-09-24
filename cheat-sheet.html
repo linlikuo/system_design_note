@@ -63,7 +63,43 @@ flowchart LR
 
 <!-- ============================================================ -->
 <h2 id="systems">Systems</h2>
-<div class="callout">No systems yet. Each one is added when its chapter is summarized.</div>
+<table>
+  <thead><tr><th>System</th><th>Chapter</th></tr></thead>
+  <tbody>
+    <tr><td><a href="#rate-limiter">Rate limiter</a></td><td><a href="notes/ch04-design-a-rate-limiter.html">Ch 4</a></td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="rate-limiter">Rate limiter <span class="tag">Ch 4</span></h2>
+<table>
+  <tbody>
+    <tr><th style="width:22%">Step 1<br>Clarifying questions</th><td>
+      Client-side or server-side? &rarr; <strong>server-side API</strong><br>
+      Throttle by IP, user ID, something else? &rarr; <strong>flexible rules</strong><br>
+      Scale? &rarr; <strong>many requests</strong> &middot; Distributed? &rarr; <strong>yes</strong><br>
+      Separate service or in app code? &rarr; <strong>your choice</strong> &middot; Tell throttled users? &rarr; <strong>yes</strong><br>
+      <em>Requirements:</em> accurate, low latency, low memory, distributed, clear exceptions, fault tolerant
+    </td></tr>
+    <tr><th>Step 2<br>Core components and API</th><td>
+      Client &rarr; <strong>rate limiter middleware</strong> (or API gateway) &rarr; API servers<br>
+      Counters in <strong>Redis</strong> (in memory, fast, <code>INCR</code> + <code>EXPIRE</code>)<br>
+      Pick an algorithm: <strong>token bucket</strong>, leaking bucket, fixed window, sliding log, sliding counter
+    </td></tr>
+    <tr><th>Step 3<br>Deep-dive topics</th><td>
+      <strong>Rules</strong> (domain, type, unit, requests_per_unit) on disk &rarr; workers &rarr; cache<br>
+      Over the limit: <strong>429</strong> + <code>X-Ratelimit-Limit / Remaining / Retry-After</code>, then drop or queue<br>
+      <strong>Race condition</strong> &rarr; Lua script or sorted set &middot; <strong>Sync</strong> &rarr; centralized Redis, not sticky sessions<br>
+      <strong>Performance</strong> &rarr; edge servers + eventual consistency &middot; <strong>Monitoring</strong> &rarr; tune rules or algorithm
+    </td></tr>
+    <tr><th>Key trade-offs</th><td>
+      Accuracy vs memory (sliding log vs sliding counter)<br>
+      Allow bursts (token bucket) vs steady rate (leaking bucket)<br>
+      Strong vs eventual consistency across data centers (exact vs low latency)<br>
+      Hard vs soft limits &middot; Middleware vs in-app vs API gateway
+    </td></tr>
+  </tbody>
+</table>
 
 </main>
 </div>

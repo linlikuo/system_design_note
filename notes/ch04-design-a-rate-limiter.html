@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ch 4 — Design a Rate Limiter</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+    mermaid.initialize({ startOnLoad: true, theme: dark ? "dark" : "default" });
+  </script>
+</head>
+<body>
+<div class="layout">
+<nav class="toc">
+  <a class="home" href="../index.html">&larr; All chapters</a>
+  <ul>
+    <li><a href="#overview">What and why</a></li>
+    <li><a href="#step1">Step 1: Scope</a></li>
+    <li><a href="#step2">Step 2: High-level design</a></li>
+    <li>&nbsp;&nbsp;<a href="#where">Where to put it</a></li>
+    <li>&nbsp;&nbsp;<a href="#algorithms">Algorithms</a></li>
+    <li>&nbsp;&nbsp;<a href="#token-bucket">Token bucket</a></li>
+    <li>&nbsp;&nbsp;<a href="#leaking-bucket">Leaking bucket</a></li>
+    <li>&nbsp;&nbsp;<a href="#fixed-window">Fixed window counter</a></li>
+    <li>&nbsp;&nbsp;<a href="#sliding-log">Sliding window log</a></li>
+    <li>&nbsp;&nbsp;<a href="#sliding-counter">Sliding window counter</a></li>
+    <li>&nbsp;&nbsp;<a href="#compare">Comparison</a></li>
+    <li>&nbsp;&nbsp;<a href="#architecture">High-level architecture</a></li>
+    <li><a href="#step3">Step 3: Deep dive</a></li>
+    <li>&nbsp;&nbsp;<a href="#rules">Rules</a></li>
+    <li>&nbsp;&nbsp;<a href="#exceeding">Exceeding the limit</a></li>
+    <li>&nbsp;&nbsp;<a href="#detailed">Detailed design</a></li>
+    <li>&nbsp;&nbsp;<a href="#distributed">Distributed environment</a></li>
+    <li>&nbsp;&nbsp;<a href="#performance">Performance</a></li>
+    <li>&nbsp;&nbsp;<a href="#monitoring">Monitoring</a></li>
+    <li><a href="#step4">Step 4: Wrap up</a></li>
+    <li><a href="../cheat-sheet.html#rate-limiter">Cheat sheet &rarr;</a></li>
+  </ul>
+</nav>
+
+<main>
+<h1>Ch 4 — Design a Rate Limiter</h1>
+<p class="subtitle"><em>System Design Interview</em> by Alex Xu. Summary notes.</p>
+
+<!-- ============================================================ -->
+<h2 id="overview">What and why</h2>
+<div class="callout">A <strong>rate limiter</strong> caps how many requests a client can send in a period of time. Requests over the limit are <strong>blocked</strong>.</div>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+    C["Clients"] --> RL{"Rate limiter"}
+    RL -->|"within limit"| API["API servers"]
+    RL -->|"over limit"| X["Blocked:<br>HTTP 429"]
+    style X stroke:#cf222e,stroke-width:2px
+</pre>
+</figure>
+
+<table>
+  <thead><tr><th>Benefit</th><th>How</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Prevent resource starvation</strong> caused by DDoS</td><td>Excess requests are blocked before they use up server resources</td></tr>
+    <tr><td><strong>Reduce cost</strong></td><td>Fewer servers are needed, and fewer calls go to paid third-party APIs</td></tr>
+    <tr><td><strong>Prevent server overload</strong></td><td>Filters out excess requests from bots or misbehaving users</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="step1">Step 1 — Understand the problem and establish design scope</h2>
+<p class="subtitle">Different algorithms have different pros and cons, so first clarify which kind of rate limiter to build.</p>
+
+<h3>Clarifying questions</h3>
+<table>
+  <thead><tr><th style="width:5%">#</th><th>Candidate asks</th><th>Interviewer answers</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Client-side or server-side?</td><td><strong>Server-side</strong> API rate limiter</td></tr>
+    <tr><td>2</td><td>Throttle by IP, user ID, or something else?</td><td><strong>Flexible</strong>: support different sets of rules</td></tr>
+    <tr><td>3</td><td>Scale: startup or big company?</td><td><strong>A large number</strong> of requests</td></tr>
+    <tr><td>4</td><td>Distributed environment?</td><td><strong>Yes</strong></td></tr>
+    <tr><td>5</td><td>Separate service or in application code?</td><td><strong>Your choice</strong></td></tr>
+    <tr><td>6</td><td>Tell throttled users?</td><td><strong>Yes</strong></td></tr>
+  </tbody>
+</table>
+
+<h3>Requirements</h3>
+<div class="cards">
+  <div class="card"><h3>🎯 Accurate</h3>Limit excessive requests accurately.</div>
+  <div class="card"><h3>⚡ Low latency</h3>Must not slow down HTTP response time.</div>
+  <div class="card"><h3>💾 Low memory</h3>Use as little memory as possible.</div>
+  <div class="card"><h3>🌐 Distributed</h3>Shared across multiple servers or processes.</div>
+  <div class="card"><h3>⚠️ Exception handling</h3>Show clear exceptions to throttled users.</div>
+  <div class="card"><h3>🛡️ Fault tolerant</h3>A rate limiter problem (e.g. a cache server going offline) doesn't take down the whole system.</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="step2">Step 2 — Propose high-level design and get buy-in</h2>
+
+<h3 id="where">Where to put the rate limiter</h3>
+<table>
+  <thead><tr><th>Option</th><th>Verdict</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Client-side</strong></td><td class="bad">Unreliable</td><td>Requests can easily be forged by malicious actors, and we may not control the client code</td></tr>
+    <tr><td><strong>Server-side</strong>, inside the API servers</td><td>Possible</td><td>Rate limiting is built into the application code</td></tr>
+    <tr><td><strong>Middleware</strong> / API gateway</td><td class="good">Common</td><td>A separate layer that throttles requests <em>before</em> they reach the APIs</td></tr>
+  </tbody>
+</table>
+
+<div class="compare">
+<figure class="diagram">
+<figcaption class="title">Inside the API servers</figcaption>
+<pre class="mermaid">
+flowchart LR
+    C["Client"] --> S["API servers<br>+ rate limiter"]
+</pre>
+</figure>
+<figure class="diagram">
+<figcaption class="title">As middleware (in front of the APIs)</figcaption>
+<pre class="mermaid">
+flowchart LR
+    C["Client"] --> M["Rate limiter<br>middleware"]
+    M --> S["API servers"]
+</pre>
+</figure>
+</div>
+
+<figure class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant M as Rate limiter middleware
+    participant A as API servers
+    Note over M: Limit: 2 requests / second
+    C->>M: request 1
+    M->>A: forward
+    C->>M: request 2
+    M->>A: forward
+    C->>M: request 3 (same second)
+    M-->>C: 429 Too Many Requests
+</pre>
+<figcaption>Middleware example: the third request within one second is rejected</figcaption>
+</figure>
+
+<div class="callout"><strong>Key question to ask yourself:</strong> should the rate limiter be on the server side or in a gateway? It depends on the tech stack, the engineering resources, and whether there is already an API gateway (e.g. in a microservice setup).</div>
+
+<!-- ============================================================ -->
+<h3 id="algorithms">Algorithms for rate limiting</h3>
+<div class="steps">
+  <span class="step"><b>1</b><a href="#token-bucket">Token bucket</a></span>
+  <span class="step"><b>2</b><a href="#leaking-bucket">Leaking bucket</a></span>
+  <span class="step"><b>3</b><a href="#fixed-window">Fixed window counter</a></span>
+  <span class="step"><b>4</b><a href="#sliding-log">Sliding window log</a></span>
+  <span class="step"><b>5</b><a href="#sliding-counter">Sliding window counter</a></span>
+</div>
+
+<!-- ---------- Token bucket ---------- -->
+<div class="algo" id="token-bucket">
+<h3>1. Token bucket <span class="tag">used by Amazon, Stripe</span></h3>
+<p>A bucket holds tokens. A <strong>refiller</strong> adds tokens at a fixed rate. Each request <strong>takes one token</strong>, and if the bucket is empty the request is dropped. Once the bucket is full, extra tokens overflow and are lost.</p>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+    R["Refiller<br>+2 tokens / sec"] --> B[("Bucket<br>capacity: 4 tokens")]
+    Req["Request"] --> Q{"Token<br>available?"}
+    B -.-> Q
+    Q -->|"yes: take 1 token"| OK["Forward to API"]
+    Q -->|"no"| Drop["Drop: 429"]
+    style Drop stroke:#cf222e,stroke-width:2px
+    style OK stroke:#1a7f37,stroke-width:2px
+</pre>
+</figure>
+
+<table>
+  <thead><tr><th>Parameter</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Bucket size</strong></td><td>The maximum number of tokens, which is how big a burst can be</td></tr>
+    <tr><td><strong>Refill rate</strong></td><td>Tokens added per second, which is the long-term rate</td></tr>
+  </tbody>
+</table>
+
+<table>
+  <thead><tr><th>How many buckets?</th><th>Example</th></tr></thead>
+  <tbody>
+    <tr><td>One per API endpoint, per user</td><td>1 post/sec, 150 friend adds/day, 5 likes/sec means 3 buckets per user</td></tr>
+    <tr><td>One per IP address</td><td>Throttle by IP</td></tr>
+    <tr><td>One global bucket</td><td>The whole system allows at most 10,000 requests/sec</td></tr>
+  </tbody>
+</table>
+
+<table>
+  <thead><tr><th style="width:50%">✅ Pros</th><th>❌ Cons</th></tr></thead>
+  <tbody><tr>
+    <td><ul class="do"><li>Easy to implement</li><li>Memory efficient</li><li><strong>Allows short bursts</strong>, as long as tokens remain</li></ul></td>
+    <td><ul class="dont"><li>Two parameters (bucket size, refill rate) that are hard to tune</li></ul></td>
+  </tr></tbody>
+</table>
+</div>
+
+<!-- ---------- Leaking bucket ---------- -->
+<div class="algo" id="leaking-bucket">
+<h3>2. Leaking bucket <span class="tag">used by Shopify</span></h3>
+<p>Requests go into a <strong>FIFO queue</strong>, and a processor pulls them out at a <strong>fixed rate</strong>, like water leaking from a bucket. If the queue is full, new requests are dropped.</p>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+    Req["Request"] --> Q{"Queue<br>full?"}
+    Q -->|"no: enqueue"| F[["FIFO queue<br>req | req | req"]]
+    Q -->|"yes"| Drop["Drop: 429"]
+    F -->|"fixed outflow rate<br>e.g. 1 req / sec"| P["Process"]
+    style Drop stroke:#cf222e,stroke-width:2px
+</pre>
+</figure>
+
+<table>
+  <thead><tr><th>Parameter</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Bucket size</strong></td><td>The queue size</td></tr>
+    <tr><td><strong>Outflow rate</strong></td><td>How many requests are processed per second</td></tr>
+  </tbody>
+</table>
+
+<table>
+  <thead><tr><th style="width:50%">✅ Pros</th><th>❌ Cons</th></tr></thead>
+  <tbody><tr>
+    <td><ul class="do"><li>Memory efficient (the queue has a fixed size)</li><li><strong>Stable outflow rate</strong>, good when a steady processing rate is needed</li></ul></td>
+    <td><ul class="dont"><li>A burst fills the queue with old requests, so newer requests get dropped</li><li>Two parameters that are hard to tune</li></ul></td>
+  </tr></tbody>
+</table>
+</div>
+
+<!-- ---------- Fixed window ---------- -->
+<div class="algo" id="fixed-window">
+<h3>3. Fixed window counter</h3>
+<p>The timeline is split into <strong>fixed windows</strong> (e.g. one per minute), each with a counter. Each request adds 1 to the counter. Once the counter reaches the limit, new requests are dropped until the next window starts.</p>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+    Req["Request"] --> W["Find current window<br>e.g. 2:01"]
+    W --> Q{"counter<br>under limit?"}
+    Q -->|"yes: counter + 1"| OK["Forward"]
+    Q -->|"no"| Drop["Drop: 429"]
+    style Drop stroke:#cf222e,stroke-width:2px
+</pre>
+</figure>
+
+<figure class="diagram">
+<figcaption class="title">⚠️ The edge problem: limit 5 per minute</figcaption>
+<pre class="mermaid">
+gantt
+    dateFormat HH:mm:ss
+    axisFormat %H:%M:%S
+    section Windows
+    Window 1 - count 5 - OK        :done, 02:00:00, 02:01:00
+    Window 2 - count 5 - OK        :done, 02:01:00, 02:02:00
+    section Requests
+    5 requests                       :active, 02:00:30, 02:01:00
+    5 requests                       :active, 02:01:00, 02:01:30
+    section Reality
+    10 requests in 1 minute - 2x   :crit, 02:00:30, 02:01:30
+</pre>
+<figcaption>Each window stays within its limit, but 10 requests get through between 2:00:30 and 2:01:30</figcaption>
+</figure>
+
+<table>
+  <thead><tr><th style="width:50%">✅ Pros</th><th>❌ Cons</th></tr></thead>
+  <tbody><tr>
+    <td><ul class="do"><li>Memory efficient</li><li>Easy to understand</li><li>Resetting the quota at the end of each window fits some use cases</li></ul></td>
+    <td><ul class="dont"><li><strong>A spike at the window edges</strong> can let through up to 2x the limit</li></ul></td>
+  </tr></tbody>
+</table>
+</div>
+
+<!-- ---------- Sliding window log ---------- -->
+<div class="algo" id="sliding-log">
+<h3>4. Sliding window log</h3>
+<p>Keep a <strong>log of request timestamps</strong> (e.g. in a Redis sorted set). For each new request:</p>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TB
+    Req["New request<br>at time t"] --> R["Remove timestamps<br>older than t - window"]
+    R --> A["Add t to the log"]
+    A --> Q{"log size<br>≤ limit?"}
+    Q -->|"yes"| OK["Accept"]
+    Q -->|"no"| Drop["Reject<br>(timestamp stays in log)"]
+    style Drop stroke:#cf222e,stroke-width:2px
+    style OK stroke:#1a7f37,stroke-width:2px
+</pre>
+</figure>
+
+<table>
+  <thead><tr><th colspan="4">Example: limit 2 requests per minute</th></tr>
+    <tr><th>Request at</th><th>Removed (older than t - 1 min)</th><th>Log after</th><th>Result</th></tr></thead>
+  <tbody>
+    <tr><td>1:00:01</td><td>none</td><td>[1:00:01]</td><td class="good">✅ size 1</td></tr>
+    <tr><td>1:00:30</td><td>none</td><td>[1:00:01, 1:00:30]</td><td class="good">✅ size 2</td></tr>
+    <tr><td>1:00:50</td><td>none</td><td>[1:00:01, 1:00:30, 1:00:50]</td><td class="bad">❌ size 3 (still logged)</td></tr>
+    <tr><td>1:01:40</td><td>1:00:01, 1:00:30</td><td>[1:00:50, 1:01:40]</td><td class="good">✅ size 2</td></tr>
+  </tbody>
+</table>
+
+<table>
+  <thead><tr><th style="width:50%">✅ Pros</th><th>❌ Cons</th></tr></thead>
+  <tbody><tr>
+    <td><ul class="do"><li><strong>Very accurate</strong>: never more than the limit in any rolling window</li></ul></td>
+    <td><ul class="dont"><li><strong>Uses a lot of memory</strong>: even rejected requests' timestamps are stored</li></ul></td>
+  </tr></tbody>
+</table>
+</div>
+
+<!-- ---------- Sliding window counter ---------- -->
+<div class="algo" id="sliding-counter">
+<h3>5. Sliding window counter <span class="tag">hybrid of 3 and 4</span></h3>
+<p>Estimate the count in the rolling window from two fixed-window counters. The previous window's count is weighted by how much of it the rolling window still overlaps.</p>
+
+<div class="callout"><strong>Requests in rolling window</strong> = requests in current window + requests in previous window &times; <strong>overlap %</strong></div>
+
+<figure class="diagram">
+<figcaption class="title">Example: limit 7 per minute, rolling window starts 30% into the current minute</figcaption>
+<pre class="mermaid">
+gantt
+    dateFormat HH:mm:ss
+    axisFormat %H:%M:%S
+    section Fixed windows
+    Previous minute - 5 requests   :done, 01:00:00, 01:01:00
+    Current minute - 3 requests    :active, 01:01:00, 01:02:00
+    section Rolling window
+    Overlap with previous - 70pct  :crit, 01:00:18, 01:01:00
+    Current part - 30pct           :01:01:00, 01:01:18
+</pre>
+</figure>
+
+<table>
+  <thead><tr><th>Calculation</th><th>Result</th></tr></thead>
+  <tbody>
+    <tr><td>3 + 5 &times; 70%</td><td>6.5, rounded down to <strong>6</strong></td></tr>
+    <tr><td>6 is under the limit of 7</td><td class="good">✅ The current request is allowed. The next one hits the limit.</td></tr>
+  </tbody>
+</table>
+
+<table>
+  <thead><tr><th style="width:50%">✅ Pros</th><th>❌ Cons</th></tr></thead>
+  <tbody><tr>
+    <td><ul class="do"><li><strong>Smooths out spikes</strong>, because the rate uses the previous window's average</li><li>Memory efficient (only 2 counters)</li></ul></td>
+    <td><ul class="dont"><li>An approximation: it assumes the previous window's requests were evenly spread. In practice it's very close: Cloudflare found only 0.003% of 400M requests wrongly allowed or limited.</li></ul></td>
+  </tr></tbody>
+</table>
+</div>
+
+<!-- ---------- Comparison ---------- -->
+<h3 id="compare">Algorithm comparison</h3>
+<table>
+  <thead><tr><th>Algorithm</th><th>Memory</th><th>Accuracy</th><th>Bursts</th><th>Best for</th></tr></thead>
+  <tbody>
+    <tr><td>Token bucket</td><td class="good">Low</td><td>Good</td><td class="good">Allows short bursts</td><td>General APIs that tolerate bursts</td></tr>
+    <tr><td>Leaking bucket</td><td class="good">Low</td><td>Good</td><td class="bad">Smoothed to a fixed rate</td><td>A stable processing rate</td></tr>
+    <tr><td>Fixed window counter</td><td class="good">Lowest</td><td class="bad">Edge spikes up to 2x</td><td class="bad">Spikes at window edges</td><td>Simple quotas that reset each period</td></tr>
+    <tr><td>Sliding window log</td><td class="bad">High</td><td class="good">Exact</td><td>Strictly limited</td><td>When accuracy matters most</td></tr>
+    <tr><td>Sliding window counter</td><td class="good">Low</td><td>Very close</td><td>Smoothed</td><td>A good balance of accuracy and memory</td></tr>
+  </tbody>
+</table>
+
+<!-- ---------- Architecture ---------- -->
+<h3 id="architecture">High-level architecture</h3>
+<div class="callout"><strong>Where to store counters?</strong> Not in a database (disk is slow). Use an <strong>in-memory cache</strong>, because it's fast and supports <strong>time-based expiration</strong>. For example, <strong>Redis</strong>.</div>
+
+<table>
+  <thead><tr><th>Redis command</th><th>Use</th></tr></thead>
+  <tbody>
+    <tr><td><code>INCR</code></td><td>Adds 1 to the stored counter</td></tr>
+    <tr><td><code>EXPIRE</code></td><td>Sets a timeout on the counter, so it's deleted automatically when the time window ends</td></tr>
+  </tbody>
+</table>
+
+<figure class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant M as Rate limiter middleware
+    participant R as Redis
+    participant A as API servers
+    C->>M: request
+    M->>R: fetch counter for this client
+    R-->>M: counter
+    alt limit reached
+        M-->>C: 429 Too Many Requests
+    else under limit
+        M->>A: forward request
+        M->>R: INCR counter (+ EXPIRE)
+    end
+</pre>
+</figure>
+
+<!-- ============================================================ -->
+<h2 id="step3">Step 3 — Design deep dive</h2>
+
+<h3 id="rules">Rate limiting rules</h3>
+<p>Rules are usually written in <strong>config files</strong> and saved on disk. Each rule defines:</p>
+<table>
+  <thead><tr><th>Field</th><th>Meaning</th><th>Example</th></tr></thead>
+  <tbody>
+    <tr><td><code>domain</code></td><td>Which area of the product the rule applies to</td><td><code>messaging</code>, <code>auth</code></td></tr>
+    <tr><td>type (<code>key</code>/<code>value</code>)</td><td>Which kind of request</td><td><code>message_type: marketing</code></td></tr>
+    <tr><td><code>unit</code></td><td>Time unit</td><td><code>second</code>, <code>minute</code>, <code>day</code></td></tr>
+    <tr><td><code>requests_per_unit</code></td><td>How many requests are allowed per unit</td><td><code>5</code></td></tr>
+  </tbody>
+</table>
+
+<pre class="code"><span class="c"># At most 5 marketing messages per day</span>
+domain: messaging
+descriptors:
+  - key: message_type
+    value: marketing
+    rate_limit:
+      unit: day
+      requests_per_unit: 5</pre>
+
+<h3 id="exceeding">Exceeding the rate limit</h3>
+<table>
+  <thead><tr><th>Situation</th><th>Response</th></tr></thead>
+  <tbody>
+    <tr><td>Request is rate limited</td><td>Return <strong>HTTP 429 Too Many Requests</strong></td></tr>
+    <tr><td>Important requests (e.g. orders)</td><td>Can be put in a <strong>message queue</strong> and processed later instead of being dropped</td></tr>
+  </tbody>
+</table>
+
+<h3>Rate limiter HTTP headers</h3>
+<p>The client learns about its limits from the response headers:</p>
+<table>
+  <thead><tr><th>Header</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>X-Ratelimit-Limit</code></td><td>How many calls the client can make <strong>per time window</strong></td></tr>
+    <tr><td><code>X-Ratelimit-Remaining</code></td><td>How many requests are <strong>still allowed</strong> in the current window</td></tr>
+    <tr><td><code>X-Ratelimit-Retry-After</code></td><td>How many <strong>seconds to wait</strong> before sending a request that won't be throttled</td></tr>
+  </tbody>
+</table>
+
+<div class="compare">
+<figure class="diagram" style="text-align:left">
+<figcaption class="title">Allowed</figcaption>
+<pre class="code" style="margin:0">HTTP/1.1 200 OK
+X-Ratelimit-Limit: 5
+X-Ratelimit-Remaining: 2</pre>
+</figure>
+<figure class="diagram" style="text-align:left">
+<figcaption class="title">Throttled</figcaption>
+<pre class="code" style="margin:0">HTTP/1.1 429 Too Many Requests
+X-Ratelimit-Limit: 5
+X-Ratelimit-Remaining: 0
+X-Ratelimit-Retry-After: 30</pre>
+</figure>
+</div>
+
+<h3 id="detailed">Detailed design (Figure 4-13)</h3>
+<figure class="diagram">
+<pre class="mermaid">
+flowchart TB
+    Client["Client"] -->|"request"| RL["Rate limiter middleware"]
+    Rules[("Rules<br>on disk")] --> Workers["Workers"]
+    Workers -->|"pull rules"| RC[("Cache: rules")]
+    RC -->|"load rules"| RL
+    RL <-->|"read / update counters"| Redis[("Redis: counters")]
+    RL -->|"not limited"| API["API servers"]
+    RL -->|"limited: 429 + headers<br>back to client"| Resp["429 response"]
+    Resp --> A["Option A:<br>drop request"]
+    Resp --> B[["Option B:<br>message queue,<br>process later"]]
+    style A stroke:#cf222e,stroke-width:2px
+    style API stroke:#1a7f37,stroke-width:2px
+</pre>
+</figure>
+<table>
+  <thead><tr><th>#</th><th>Flow</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Rules are stored on disk. <strong>Workers</strong> regularly pull them into a <strong>cache</strong>.</td></tr>
+    <tr><td>2</td><td>A client request arrives at the <strong>rate limiter middleware</strong> first.</td></tr>
+    <tr><td>3</td><td>The middleware loads the rules from the cache and reads the counter and last-request timestamp from <strong>Redis</strong>.</td></tr>
+    <tr><td>4a</td><td><strong>Not limited</strong>: forward the request to the API servers.</td></tr>
+    <tr><td>4b</td><td><strong>Limited</strong>: return 429 to the client, then either <strong>drop</strong> the request or put it in a <strong>message queue</strong>.</td></tr>
+  </tbody>
+</table>
+
+<!-- ---------- Distributed ---------- -->
+<h3 id="distributed">Rate limiter in a distributed environment</h3>
+<p>Two challenges: <strong>race conditions</strong> and <strong>synchronization</strong>.</p>
+
+<h3>Challenge 1: race condition</h3>
+<figure class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+    participant R1 as Request 1
+    participant Redis as Redis (counter = 3)
+    participant R2 as Request 2
+    R1->>Redis: GET counter
+    R2->>Redis: GET counter
+    Redis-->>R1: 3
+    Redis-->>R2: 3
+    R1->>Redis: SET counter = 4
+    R2->>Redis: SET counter = 4
+    Note over Redis: counter = 4, but should be 5.<br>One request was never counted.
+</pre>
+<figcaption>Read, check, and write are separate steps, so two requests can interleave</figcaption>
+</figure>
+<p>Locks would fix this but make the system much slower. Instead, two approaches are common:</p>
+
+<figure class="diagram">
+<figcaption class="title">Fix 1: Lua script (atomic)</figcaption>
+<pre class="mermaid">
+sequenceDiagram
+    participant R1 as Request 1
+    participant Redis as Redis
+    participant R2 as Request 2
+    R1->>Redis: EVAL script
+    Note over Redis: GET, check, INCR<br>run as ONE step
+    Redis-->>R1: allowed (4)
+    R2->>Redis: EVAL script
+    Note over Redis: waits its turn
+    Redis-->>R2: allowed (5)
+</pre>
+</figure>
+<figure class="diagram">
+<figcaption class="title">Fix 2: Redis sorted set</figcaption>
+<pre class="mermaid">
+flowchart TB
+    S[("Sorted set per user<br>member: request id<br>score: timestamp")]
+    S --> A["1. ZREMRANGEBYSCORE<br>remove old timestamps"]
+    A --> B["2. ZADD<br>add this request"]
+    B --> C["3. ZCARD<br>count requests in window"]
+    C --> D{"count ≤ limit?"}
+</pre>
+</figure>
+
+
+<table>
+  <thead><tr><th>Approach</th><th>What it is</th><th>Why it fixes the race</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Lua script</strong></td><td>A small program sent to Redis and run <strong>inside Redis</strong></td><td>Redis runs one script at a time, so read, check, and increment happen <strong>atomically</strong> and no other request can slip in between.</td></tr>
+    <tr><td><strong>Sorted set</strong></td><td>A Redis set whose members are kept <strong>ordered by a score</strong>. The score is the request timestamp.</td><td>Each request adds its own entry, so no read-modify-write of a shared counter is needed. Removing old entries by score range gives a sliding window. The commands run together in a <code>MULTI</code> transaction.</td></tr>
+  </tbody>
+</table>
+
+<div class="compare">
+<figure class="diagram" style="text-align:left">
+<figcaption class="title">Lua script (fixed window)</figcaption>
+<pre class="code" style="margin:0"><span class="c">-- KEYS[1] = counter key
+-- ARGV[1] = window seconds, ARGV[2] = limit</span>
+local n = redis.call("INCR", KEYS[1])
+if n == 1 then
+  redis.call("EXPIRE", KEYS[1], ARGV[1])
+end
+if n &gt; tonumber(ARGV[2]) then
+  return 0  <span class="c">-- rejected</span>
+end
+return 1    <span class="c">-- allowed</span></pre>
+</figure>
+<figure class="diagram" style="text-align:left">
+<figcaption class="title">Sorted set (sliding window, 60 s)</figcaption>
+<pre class="code" style="margin:0">MULTI
+ZREMRANGEBYSCORE rl:user1 0 (now - 60000)
+ZADD  rl:user1 now request_id
+ZCARD rl:user1        <span class="c"># count in window</span>
+EXPIRE rl:user1 60
+EXEC</pre>
+</figure>
+</div>
+
+<h3>Challenge 2: synchronization</h3>
+<p>With many rate limiter servers, a client's requests can land on different limiters (the web tier is stateless). Each limiter only sees part of the traffic.</p>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+    C1["Client 1"] -->|"request 1"| RL1["Rate limiter 1<br>counts 1 for client 1"]
+    C1 -->|"request 2"| RL2["Rate limiter 2<br>counts 1 for client 1"]
+    RL1 -. "no shared data" .- RL2
+</pre>
+<figcaption>Problem: client 1 has really sent 2 requests, but each limiter counts only 1</figcaption>
+</figure>
+
+<div class="compare">
+<figure class="diagram">
+<figcaption class="title">❌ Sticky sessions</figcaption>
+<pre class="mermaid">
+flowchart TB
+    C1["Client 1"] -->|"always"| RL1["Rate limiter 1"]
+    C2["Client 2"] -->|"always"| RL2["Rate limiter 2"]
+</pre>
+</figure>
+<figure class="diagram">
+<figcaption class="title">✅ Centralized Redis (better)</figcaption>
+<pre class="mermaid">
+flowchart TB
+    C1["Client 1"] --> RL1["Rate limiter 1"]
+    C1 --> RL2["Rate limiter 2"]
+    C2["Client 2"] --> RL2
+    RL1 --> R[("Redis<br>one shared counter<br>per client")]
+    RL2 --> R
+</pre>
+</figure>
+</div>
+
+<table>
+  <thead><tr><th></th><th>Sticky sessions</th><th>Centralized data store (Redis)</th></tr></thead>
+  <tbody>
+    <tr><td>How</td><td>A client always goes to the same rate limiter</td><td>All limiters read and write the <strong>same counters</strong> in one shared Redis</td></tr>
+    <tr><td>Scalable</td><td class="bad">No: load can't be spread freely</td><td class="good">Yes: add limiters freely, since they're stateless</td></tr>
+    <tr><td>Flexible</td><td class="bad">No: a limiter failure affects its clients</td><td class="good">Yes: any limiter can serve any client</td></tr>
+    <tr><td>Accuracy</td><td>Each limiter sees all of its client's traffic</td><td>Every limiter sees the full, up-to-date count</td></tr>
+  </tbody>
+</table>
+
+<!-- ---------- Performance ---------- -->
+<h3 id="performance">Performance optimization</h3>
+<table>
+  <thead><tr><th>#</th><th>Optimization</th><th>Effect</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td><strong>Multi-data-center / edge servers</strong> around the world</td><td>Traffic is automatically routed to the <strong>closest edge server</strong>, which cuts latency</td></tr>
+    <tr><td>2</td><td>Synchronize data with an <strong>eventual consistency</strong> model</td><td>Edges don't wait for each other on every request, so responses stay fast</td></tr>
+  </tbody>
+</table>
+
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+    U1["User in Asia"] --> E1["Edge: Tokyo"]
+    U2["User in EU"] --> E2["Edge: Frankfurt"]
+    U3["User in US"] --> E3["Edge: Virginia"]
+    E1 <-. "sync counters<br>(eventually)" .-> E2
+    E2 <-. "sync counters<br>(eventually)" .-> E3
+</pre>
+</figure>
+
+<h3>What is eventual consistency?</h3>
+<div class="callout">Updates are copied to the other replicas <strong>asynchronously</strong>. For a short time, replicas can hold <strong>different (stale) values</strong>, but if no new updates arrive, all replicas <strong>eventually converge</strong> to the same value.</div>
+
+<figure class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+    participant A as Edge A
+    participant B as Edge B
+    Note over A,B: counter = 3 on both
+    A->>A: request arrives, counter = 4
+    A-->>B: replicate in background
+    Note over B: still sees 3 (stale for a moment)
+    B->>B: receives update, counter = 4
+    Note over A,B: consistent again: counter = 4
+</pre>
+</figure>
+
+<table>
+  <thead><tr><th></th><th>Strong consistency</th><th>Eventual consistency</th></tr></thead>
+  <tbody>
+    <tr><td>Reads</td><td>Always return the latest write</td><td>May briefly return an old value</td></tr>
+    <tr><td>Write speed</td><td class="bad">Slow: waits for all replicas</td><td class="good">Fast: doesn't wait</td></tr>
+    <tr><td>Availability</td><td>Lower during network problems</td><td class="good">Higher</td></tr>
+    <tr><td>For a rate limiter</td><td>Exact, but adds latency to every request</td><td><strong>Good enough</strong>: a few extra requests may get through, and in return latency stays low</td></tr>
+  </tbody>
+</table>
+
+<!-- ---------- Monitoring ---------- -->
+<h3 id="monitoring">Monitoring</h3>
+<p>Collect analytics to check that the <strong>algorithm</strong> and the <strong>rules</strong> are effective.</p>
+<figure class="diagram">
+<pre class="mermaid">
+flowchart LR
+    M["Monitor<br>rate limiter"] --> Q1{"Too many valid<br>requests dropped?"}
+    Q1 -->|"yes"| A1["Rules too strict:<br>relax the rules"]
+    M --> Q2{"Ineffective during<br>traffic bursts?<br>e.g. flash sales"}
+    Q2 -->|"yes"| A2["Switch algorithm to one<br>that supports bursts:<br>token bucket"]
+</pre>
+</figure>
+
+<!-- ============================================================ -->
+<h2 id="step4">Step 4 — Wrap up</h2>
+<div class="cards">
+  <div class="card"><h3>🧮 <mark>Algorithms</mark></h3>Token bucket, leaking bucket, fixed window, sliding log, sliding counter. See the <a href="#compare">comparison</a>.</div>
+  <div class="card"><h3>🧱 <mark>Hard</mark> vs <mark>soft</mark></h3><strong>Hard</strong>: requests can never exceed the threshold.<br><strong>Soft</strong>: can exceed it for a short period.</div>
+  <div class="card"><h3>📚 <mark>Different levels</mark></h3>Rate limit per <mark>application</mark> (HTTP, layer 7), per <mark>IP address</mark> (layer 3, e.g. with iptables), and so on.</div>
+</div>
+
+<table>
+  <thead><tr><th></th><th>Hard rate limiting</th><th>Soft rate limiting</th></tr></thead>
+  <tbody>
+    <tr><td>Threshold</td><td>Never exceeded</td><td>Can be exceeded briefly</td></tr>
+    <tr><td>Example (limit 100/min)</td><td>The 101st request is rejected</td><td>A short burst to 110 is allowed</td></tr>
+    <tr><td>Good for</td><td>Strict protection or billing</td><td>User-friendly handling of bursts</td></tr>
+  </tbody>
+</table>
+
+</main>
+</div>
+</body>
+</html>
